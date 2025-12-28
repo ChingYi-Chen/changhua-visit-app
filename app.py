@@ -1,3 +1,4 @@
+import sqlite3
 import os
 import re
 from datetime import datetime
@@ -207,8 +208,8 @@ def upsert_case(user_id: int, case_id: str, name: str, address: str, town: str,
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("""
-      INSERT INTO cases (user_id, case_id, name, address_raw, town, lat, lng, geo_status, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      INSERT INTO cases (user_id, case_id, name, address_raw, town, lat, lng, geo_status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(user_id, case_id) DO UPDATE SET
         name=excluded.name,
         address_raw=excluded.address_raw,
@@ -216,7 +217,7 @@ def upsert_case(user_id: int, case_id: str, name: str, address: str, town: str,
         lat=excluded.lat,
         lng=excluded.lng,
         geo_status=excluded.geo_status,
-                updated_at=CURRENT_TIMESTAMP
+        updated_at=CURRENT_TIMESTAMP
     """, (user_id, case_id, name, address, town, lat, lng, geo_status))
     conn.commit()
     conn.close()
@@ -595,27 +596,40 @@ def main():
 
 def init_admin_if_needed():
     # 只在 Render 上用環境變數啟動
-    admin_user = os.getenv("INIT_ADMIN_USER")
-    admin_pass = os.getenv("INIT_ADMIN_PASS")
+    admin_user = (os.getenv("INIT_ADMIN_USER") or "").strip()
+    admin_pass = (os.getenv("INIT_ADMIN_PASS") or "").strip()
 
     if not admin_user or not admin_pass:
         return
 
     init_db()
+
     conn = get_conn()
     cur = conn.cursor()
 
+    # 已存在就不再建立
     cur.execute("SELECT 1 FROM users WHERE username = ?", (admin_user,))
     if cur.fetchone():
         conn.close()
-        return  # 已存在就不再建立
+        return
 
-    cur.execute(
-        "INSERT INTO users (username, password_hash) VALUES (?, ?)",
-        (admin_user, hash_password(admin_pass))
-    )
-    conn.commit()
-    conn.close()
+    try:
+        cur.execute(
+            "INSERT INTO users (username, password_hash) VALUES (?, ?)",
+            (admin_user, hash_password(admin_pass))
+        )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        # 可能在 rerun/多執行緒下重複建立，忽略即可
+        pass
+    finally:
+        conn.close()
+
+
+
+
+
+
 
 
 # ✅ 一定要在這裡呼叫（定義完之後）
