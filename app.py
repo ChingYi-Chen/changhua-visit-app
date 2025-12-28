@@ -1,8 +1,6 @@
 import os
 import re
-import sqlite3
 from datetime import datetime
-from pathlib import Path
 from typing import Optional, Tuple, List
 
 import pandas as pd
@@ -12,6 +10,8 @@ import folium
 from streamlit_folium import st_folium
 import bcrypt
 
+from auth import hash_password
+from db import get_conn, init_db   # ✅只用這個
 # =====================
 # 基本設定
 # =====================
@@ -20,7 +20,6 @@ st.set_page_config(page_title="彰化訪視排程系統", layout="wide")
 ORIGIN_ADDRESS = "彰化縣政府第二辦公大樓"
 SUBSIDY_PER_KM = 3.0
 MAX_WAYPOINTS_FOR_DIRECTIONS = 10
-DB_PATH = Path("local.db")
 
 GOOGLE_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "").strip()
 
@@ -62,59 +61,6 @@ def build_case_label_maps(df: pd.DataFrame):
     id_to_label = dict(zip(tmp["case_id"], tmp["label"]))
     return labels, label_to_id, id_to_label
 
-# =====================
-# DB
-# =====================
-def get_conn():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-def init_db():
-    conn = get_conn()
-    cur = conn.cursor()
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS users (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      username TEXT UNIQUE NOT NULL,
-      password_hash TEXT NOT NULL,
-      created_at TEXT DEFAULT CURRENT_TIMESTAMP
-    )
-    """)
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS cases (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER NOT NULL,
-      case_id TEXT NOT NULL,
-      name TEXT NOT NULL,
-      address_raw TEXT,
-      address_fixed TEXT,
-      town TEXT,
-      lat REAL,
-      lng REAL,
-      geo_status TEXT DEFAULT 'FAIL',
-      last_visit TEXT,
-      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE(user_id, case_id),
-      FOREIGN KEY(user_id) REFERENCES users(id)
-    )
-    """)
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS geocode_cache (
-      addr_norm TEXT PRIMARY KEY,
-      lat REAL,
-      lng REAL,
-      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-    )
-    """)
-
-    conn.commit()
-    conn.close()
-
-init_db()
 
 # =====================
 # Auth
@@ -647,4 +593,34 @@ def main():
     else:
         page_map_and_route(user)
 
+def init_admin_if_needed():
+    # 只在 Render 上用環境變數啟動
+    admin_user = os.getenv("INIT_ADMIN_USER")
+    admin_pass = os.getenv("INIT_ADMIN_PASS")
+
+    if not admin_user or not admin_pass:
+        return
+
+    init_db()
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("SELECT 1 FROM users WHERE username = ?", (admin_user,))
+    if cur.fetchone():
+        conn.close()
+        return  # 已存在就不再建立
+
+    cur.execute(
+        "INSERT INTO users (username, password_hash) VALUES (?, ?)",
+        (admin_user, hash_password(admin_pass))
+    )
+    conn.commit()
+    conn.close()
+
+
+# ✅ 一定要在這裡呼叫（定義完之後）
+init_db()
+init_admin_if_needed()
+
+# ✅ 最後才跑主程式
 main()
