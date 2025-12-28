@@ -1,0 +1,10 @@
+streamlit
+pandas
+googlemaps
+openpyxl
+requests
+folium
+streamlit-folium
+psycopg2-binary
+bcrypt
+python-dotenv
