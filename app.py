@@ -356,15 +356,33 @@ def read_excel_autodetect(file) -> pd.DataFrame:
 # =====================
 # Cases CRUD
 # =====================
+def _table_cols(conn, table: str) -> set:
+    cur = conn.cursor()
+    cur.execute(f"PRAGMA table_info({table})")
+    cols = {r[1] for r in cur.fetchall()}  # r[1] = column name
+    return cols
+
 def fetch_cases(user_id: int) -> pd.DataFrame:
     conn = get_conn()
-    df = pd.read_sql_query("""
-      SELECT case_id, name, address_raw, address_fixed, town, lat, lng, geo_status, updated_at
+    cols = _table_cols(conn, "cases")
+
+    select_cols = ["case_id", "name", "address_raw", "address_fixed", "lat", "lng", "geo_status", "updated_at"]
+    if "town" in cols:
+        select_cols.insert(4, "town")  # 放在 address_fixed 後面
+
+    sql = f"""
+      SELECT {", ".join(select_cols)}
       FROM cases
       WHERE user_id = ?
       ORDER BY updated_at DESC
-    """, conn, params=(user_id,))
+    """
+    df = pd.read_sql_query(sql, conn, params=(user_id,))
     conn.close()
+
+    # 確保 town 欄位存在（就算 DB 沒有也補空字串，後面 UI 不會炸）
+    if "town" not in df.columns:
+        df["town"] = ""
+
     return df
 
 def upsert_case(user_id: int, case_id: str, name: str, address: str, town: str,
@@ -833,77 +851,144 @@ def page_map_and_route(user):
         st.info("目前沒有已定位的個案。請先匯入或定位。")
         return
 
-    # ---- selection state (fix #3: avoid "短暫重整後要再點一次") ----
+    # -----------------------
+    # Selection state
+    # -----------------------
     st.session_state.setdefault("selected_case_ids", [])
     st.session_state.setdefault("picked_labels", [])
 
-    selected_ids = list(st.session_state["selected_case_ids"])
+    # labels maps
+    labels, label_to_id, id_to_label = build_case_label_maps(df_ok)
 
-    # ---- Map (fix #2: click marker to toggle selection) ----
+    def sync_labels_from_ids():
+        """selected_case_ids -> picked_labels"""
+        ids = st.session_state.get("selected_case_ids", [])
+        st.session_state["picked_labels"] = [id_to_label[cid] for cid in ids if cid in id_to_label]
+
+    def sync_ids_from_labels():
+        """picked_labels -> selected_case_ids (multiselect on_change)"""
+        picked = st.session_state.get("picked_labels", [])
+        ids = [label_to_id[x] for x in picked if x in label_to_id]
+        # de-dup + stable sort
+        ids = sorted(list(dict.fromkeys(ids)), key=case_sort_key)
+        st.session_state["selected_case_ids"] = ids
+
+    def clear_all():
+        st.session_state["selected_case_ids"] = []
+        st.session_state["picked_labels"] = []
+
+    def remove_one(cid: str):
+        cid = str(cid)
+        st.session_state["selected_case_ids"] = [x for x in st.session_state["selected_case_ids"] if str(x) != cid]
+        sync_labels_from_ids()
+
+    # 先把現有 ids 同步到 labels（確保初次進入一致）
+    # 注意：只要你 state 有變更，我們就靠 callback 維持一致
+    if st.session_state["picked_labels"] == [] and st.session_state["selected_case_ids"]:
+        sync_labels_from_ids()
+
+    selected_ids = list(st.session_state["selected_case_ids"])
+    selected_set = set(map(str, selected_ids))
+
+    # -----------------------
+    # Map (click marker -> toggle)
+    # -----------------------
     m = folium.Map(location=[24.07, 120.54], zoom_start=11)
     for _, r in df_ok.iterrows():
-        label = f"{r['case_id']}｜{r['name']}"
-        is_sel = str(r["case_id"]) in set(selected_ids)
+        cid = str(r["case_id"]).strip()
+        label = f"{cid}｜{str(r.get('name','') or '').strip()}"
+        is_sel = cid in selected_set
         color = "green" if is_sel else "blue"
         folium.CircleMarker(
             location=[float(r["lat"]), float(r["lng"])],
             radius=6,
             tooltip=label,
-            popup=f"{label}<br><br>{(r['address_fixed'] or r['address_raw'] or '')}",
+            popup=f"{label}<br><br>{(r.get('address_fixed') or r.get('address_raw') or '')}",
             color=color,
             fill=True,
             fill_opacity=0.8
         ).add_to(m)
 
     c1, c2 = st.columns([2, 1])
+
     with c1:
-        out = st_folium(m, use_container_width=True, height=650)
+        out = st_folium(m, use_container_width=True, height=650, key="main_map")
         clicked = out.get("last_clicked") or out.get("last_object_clicked")
+
         if clicked:
-            # nearest case within 80m -> toggle
+            # 找最近點（80m 內視為同一個 marker）
             latc, lngc = float(clicked["lat"]), float(clicked["lng"])
             tmp = df_ok.copy()
-            tmp["__d"] = tmp.apply(lambda r: haversine_m(latc, lngc, float(r["lat"]), float(r["lng"])), axis=1)
+            tmp["__d"] = tmp.apply(lambda rr: haversine_m(latc, lngc, float(rr["lat"]), float(rr["lng"])), axis=1)
             nearest = tmp.sort_values("__d").head(1)
             if not nearest.empty and float(nearest.iloc[0]["__d"]) < 80:
-                cid = str(nearest.iloc[0]["case_id"])
-                cur = set(st.session_state["selected_case_ids"])
+                cid = str(nearest.iloc[0]["case_id"]).strip()
+                cur = set(map(str, st.session_state["selected_case_ids"]))
                 if cid in cur:
                     cur.remove(cid)
                 else:
                     cur.add(cid)
-                # keep stable, sorted by case id (not by click order)
-                st.session_state["selected_case_ids"] = sorted(list(cur), key=case_sort_key)
-                st.rerun()
 
+                st.session_state["selected_case_ids"] = sorted(list(cur), key=case_sort_key)
+                sync_labels_from_ids()
+                # 不強制 st.rerun：下一次 rerun 會自然顯示顏色變化（Streamlit 仍會 rerun，但我們不額外觸發）
+                # 如果你希望點一下立刻變色，就取消註解下一行：
+                # st.rerun()
+
+    # -----------------------
+    # Right panel UI
+    # -----------------------
     with c2:
         st.subheader("選取個案")
         st.caption(f"起點/終點：{ORIGIN_ADDRESS}")
         st.caption(f"補助：每公里 {SUBSIDY_PER_KM} 元（Google 道路里程）")
         st.caption("可用右側清單勾選，也可直接點地圖上的標記加入/移除。")
 
-        labels, label_to_id, id_to_label = build_case_label_maps(df_ok)
-
-        # sync picked_labels from selected_case_ids only when picked_labels is empty (avoid overwriting user's UI state)
-        if not st.session_state["picked_labels"]:
-            st.session_state["picked_labels"] = [id_to_label[cid] for cid in st.session_state["selected_case_ids"] if cid in id_to_label]
-
-        picked_labels = st.multiselect(
+        st.multiselect(
             "已定位個案列表（案號｜姓名）",
             options=labels,
             key="picked_labels",
+            on_change=sync_ids_from_labels
         )
-        picked_ids = [label_to_id[x] for x in picked_labels]
-        picked_ids = sorted(list(dict.fromkeys(picked_ids)), key=case_sort_key)  # de-dup + stable
-        st.session_state["selected_case_ids"] = picked_ids
 
-        picked_df = df_ok[df_ok["case_id"].isin(picked_ids)].copy()
-        if not picked_df.empty:
-            st.dataframe(picked_df[["case_id", "name", "geo_status"]], use_container_width=True)
+        # 清除全部：最可靠（不要依賴 multiselect 的 X）
+        if st.button("清除全部已安排", use_container_width=True):
+            clear_all()
+            st.rerun()
+
+        picked_ids = list(st.session_state["selected_case_ids"])
+        picked_df = df_ok[df_ok["case_id"].astype(str).isin(list(map(str, picked_ids)))].copy()
 
         st.divider()
 
-        if st.button("🚗 計算最短路線（道路距離最佳化）"):
+        # 逐筆移除（修：刪到最後一個刪不掉）
+        if picked_ids:
+            st.caption("已安排訪視清單（逐筆移除）")
+            for cid in picked_ids:
+                row = df_ok[df_ok["case_id"].astype(str) == str(cid)]
+                nm = row["name"].iloc[0] if (not row.empty and "name" in row.columns) else ""
+                r1, r2 = st.columns([3, 1])
+                with r1:
+                    st.write(f"- {cid}｜{nm}")
+                with r2:
+                    st.button(
+                        "移除",
+                        key=f"rm_{cid}",
+                        use_container_width=True,
+                        on_click=remove_one,
+                        args=(cid,)
+                    )
+        else:
+            st.info("目前尚未安排任何個案。")
+
+        # 顯示 picked_df
+        if not picked_df.empty:
+            show_cols = [c for c in ["case_id", "name", "geo_status"] if c in picked_df.columns]
+            st.dataframe(picked_df[show_cols], use_container_width=True)
+
+        st.divider()
+
+        if st.button("🚗 計算最短路線（道路距離最佳化）", use_container_width=True):
             if len(picked_ids) < 1:
                 st.error("請至少選 1 個個案")
                 st.stop()
@@ -911,11 +996,11 @@ def page_map_and_route(user):
             if len(picked_ids) > MAX_WAYPOINTS_FOR_DIRECTIONS:
                 st.warning(f"你選了 {len(picked_ids)} 個點，先以前 {MAX_WAYPOINTS_FOR_DIRECTIONS} 個計算。")
                 picked_ids = picked_ids[:MAX_WAYPOINTS_FOR_DIRECTIONS]
-                picked_df = df_ok[df_ok["case_id"].isin(picked_ids)].copy()
+                picked_df = df_ok[df_ok["case_id"].astype(str).isin(list(map(str, picked_ids)))].copy()
 
             gmaps = googlemaps.Client(key=GOOGLE_KEY)
 
-            # Ensure deterministic order of points list (so returned order indices map correctly)
+            # deterministic order for mapping indices
             picked_df = picked_df.sort_values("case_id", key=lambda s: s.map(case_sort_key)).reset_index(drop=True)
             points = list(zip(picked_df["lat"].astype(float), picked_df["lng"].astype(float)))
 
