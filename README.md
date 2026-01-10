@@ -3,53 +3,77 @@
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
 [![Streamlit](https://img.shields.io/badge/Framework-Streamlit-red.svg)](https://streamlit.io/)
-[![Deployment](https://img.shields.io/badge/Render-Deployed-brightgreen.svg)](https://render.com/)
+[![GDPR Compliant](https://img.shields.io/badge/Privacy-GDPR_Compliant-green.svg)](#-data-privacy--security-gdpr-alignment)
 
-## 📌 專案背景與動機
-本專案源自於彰化縣政府勞工處個案管理員的實務需求。在處理更生人暨藥癮者訪視工作時，為解決傳統流程中「行政紀錄與地圖導航脫節」的痛點，本系統透過 Python 整合 Google Maps API，實現**一鍵式路徑優化**與**自動化里程計算**，有效提升第一線社福人員的行政效率。
+## 📌 Project Overview
+Developed by a professional Case Manager at the **Changhua County Government**, this system is a decision support tool designed to bridge the gap between administrative Excel records and field navigation for social workers. 
 
----
-
-## 🚀 線上展示 (Live Demo)
-本系統已成功部署於 **Render** 雲端平台，為確保評測流暢，已預載測試資料集供直接使用：
-* **系統網頁**：[https://changhua-visit-app.onrender.com]
-* **測試帳號**：demo1234
-* **測試密碼**：demo1234
+By integrating **Python** with **Google Maps APIs**, it automates route optimization and travel subsidy calculations, transforming a labor-intensive manual process into a streamlined digital workflow.
 
 ---
 
-## 📂 核心檔案功能說明
-
-本專案採模組化設計，實現介面、安全認證與資料邏輯的分離：
-
-### 1. 系統入口與前端
-* **`app.py`**：系統主程式，負責 Streamlit UI 渲染、Session 狀態管理及多頁面控制功能。
-
-### 2. 安全認證模組 (Security)
-* **`auth.py`**：核心認證模組。整合 `Bcrypt` 雜湊演算法處理密碼，系統不儲存明文密碼，確保使用者資料庫安全，符合資安防護規範。
-* **`create_user.py`**：後端管理工具。基於資安原則，系統不開放前台註冊，所有帳號權限皆由管理者透過此腳本於後端安全配發。
-
-### 3. 資料庫與 API 邏輯
-* **`db.py`**：資料庫通訊核心（CRUD）。負責個案資料存取及 **地理資訊快取 (Geocoding Cache)** 邏輯，能自動儲存已查詢過的地址與路徑，降低 API 呼叫成本。
-* **`requirements.txt`**：定義系統運行所需之環境依賴套件（如 `googlemaps`, `folium`, `bcrypt` 等）。
+## 🚀 Live Demo
+* **Web Link**: [https://changhua-visit-app.onrender.com]
+* **Test Account**: `demo1234`
+* **Test Password**: `demo1234`
+> *Note: It is recommended to use the web version for evaluation as the API environment is pre-configured.*
 
 ---
 
-## ✨ 核心技術特色
-* **智能路徑優化**：串接 Google Directions API 並啟用 `optimize:true` 參數，自動演算最順路之訪視順序。
-* **里程補助結算**：自動根據 Google Maps 回傳之實測里程，依實務標準（每公里 3 元）即時試算補助金額。
-* **隱私設計 (Privacy by Design)**：參考 **CIPP/E** 規範，實作帳號間的資料隔離（Data Segregation），確保高敏感個案資訊安全。
+## 🛡️ Data Privacy & Security: GDPR Alignment
+The system is built on **Privacy by Design** principles, aligning technical implementations with the European **General Data Protection Regulation (GDPR)** standards to protect sensitive case data.
+
+### 1. Data Minimization & Purpose Limitation
+* **GDPR Principle**: Only process data "necessary" for a specific purpose.
+* **Implementation**: The system uses a **Pass-through Filtering** mechanism. Although social work Excel files contain highly sensitive data (e.g., medical or criminal history), the system is hard-coded to **extract only three necessary fields: Case ID, Name, and Address**. All other sensitive columns are ignored at the memory level and never stored.
+
+### 2. Privacy by Default
+* **GDPR Principle**: Privacy protections are embedded into the lifecycle, not added as an afterthought.
+* **Implementation**: A closed-loop architecture is used. Public registration is disabled to prevent unauthorized access. It utilizes **Bcrypt hashing** for passwords and a **Geocoding Cache** to minimize the "data footprint" exchanged with third-party APIs.
+
+### 3. Data Segregation & Integrity
+* **GDPR Principle**: Ensure protection against unauthorized access.
+* **Implementation**: Implements **Physical Data Segregation** via SQLite. Each manager only accesses their own imported cases. API keys are managed through server environment variables, never hard-coded in the repository.
 
 ---
 
-## ⚙️ 環境配置 (Environment Variables)
-本專案之敏感資訊（如 API Key）均透過系統環境變數管理，確保原始碼安全。若欲於本地端執行，需配置：
-- `Maps_API_KEY`: Google Cloud Platform 核發之金鑰。
+## 🛠️ Technical Architecture & Database Design
+
+### 1. System Logic
+The application utilizes **Streamlit** for the frontend, while the backend handles geospatial logic and API communication.
+* **Data Layer**: SQLite manages user isolation and geocoding caches.
+* **Computation Layer**: Implements the **Held–Karp (Dynamic Programming) algorithm** to solve the Traveling Salesman Problem (TSP).
+
+
+
+### 2. Database Schema
+* **`users`**: Stores Bcrypt-hashed credentials.
+* **`cases`**: Manages case coordinates and geocoding status (`OK`, `FAIL`, `MANUAL`), allowing for reverse-geocoding via map pin-drops.
+* **`geocode_cache` & `distance_cache`**: Reduces API costs by storing previously resolved addresses and road-distance matrices.
+
+### 3. Route Optimization Logic
+* **Global Optimization**: Unlike simple greedy algorithms, this system solves for the **absolute shortest loop** using DP.
+* **Real-world Distance**: Calculations are based on actual road distance (Google Distance Matrix) rather than straight-line distance, ensuring that the **3 TWD/KM** subsidy calculation matches real-world fuel consumption.
+
+
 
 ---
 
-### 💡 評測小提醒
-1. **建議優先使用網頁版**：建議教授優先點擊上方 **Render 連結** 進行評測，該環境已配置完整的 Google Maps API 運作環境。
-2. **資料去識別化**：系統內之個案姓名、地址等資訊均使用模擬數據，僅供功能展示使用。
+## ✨ Key Features
+* **Auto-Header Detection**: The `find_header_row` function intelligently identifies the correct data starting point in complex Excel files.
+* **Interactive Map Correction**: Integrated **Folium** maps allow users to correct inaccurate addresses by manually dropping a pin on the map.
+* **Natural Sort**: Case IDs are sorted naturally (e.g., A2 < A10) to match administrative logic.
+* **One-Click Navigation**: Generates direct Google Maps navigation links for field use.
 
 ---
+
+## 📂 File Structure
+* `app.py`: Main entry point (UI rendering, Session management, Multi-page logic).
+* `auth.py`: Security module (Bcrypt hashing and authentication).
+* `db.py`: Database communication core (CRUD and Schema definitions).
+* `create_user.py`: Administrative tool for secure account provisioning.
+
+---
+
+### 💡 Developer's Statement
+As both a social worker and a developer, I recognize that privacy for vulnerable populations is paramount. This system is not just about route optimization; it is a technical defense line designed to protect human dignity through compliant digital transformation.
